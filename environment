@@ -11,3 +11,40 @@ COPY generate_data.py /tmp/generate_data.py
 RUN python /tmp/generate_data.py && rm /tmp/generate_data.py
 
 # The agent will have the data at /app/data.csv
+import numpy as np
+import pandas as pd
+
+# Set seed for reproducibility
+np.random.seed(42)
+
+# Parameters
+G = 20           # number of groups
+n_per_group = 10 # observations per group
+N = G * n_per_group
+
+# True parameter values
+beta0_true = 0.5
+beta1_true = 1.0
+sigma_true = 0.5
+p_true = 0.3
+
+# Generate groups and covariates
+groups = np.repeat(np.arange(1, G+1), n_per_group)
+x = np.random.uniform(0, 1, size=N)
+
+# Random intercepts
+u = np.random.normal(0, sigma_true, size=G)
+u_expanded = u[groups - 1]  # index by group id
+
+# Linear predictor and Poisson mean
+eta = beta0_true + beta1_true * x + u_expanded
+lambda_ = np.exp(eta)
+
+# Zero-inflation process
+z = np.random.binomial(1, p_true, size=N)  # 1 = structural zero
+y = np.where(z == 1, 0, np.random.poisson(lambda_))
+
+# Save to CSV
+df = pd.DataFrame({'group': groups, 'x': x, 'y': y})
+df.to_csv('/app/data.csv', index=False)
+print("Data saved to /app/data.csv")
