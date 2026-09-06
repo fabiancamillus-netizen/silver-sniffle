@@ -1,0 +1,414 @@
+`task.toml`
+
+```toml
+artifacts = ["/app/posterior_summary.json"]
+
+[task]
+name = "afterquery/zi-mcmc"
+
+[metadata]
+author_name = "Bernard Omolo"
+author_email = "bomolo64@gmail.com"
+difficulty_explanation = "This task requires implementing a custom MCMC sampler for a non-standard model with a latent random intercept and zero-inflation. Frontier agents often fail because they either rely on existing libraries (which are not allowed) or make subtle errors in deriving conditional posteriors and tuning proposal distributions. The model's hierarchical structure and the zero-inflation component make it more complex than a standard Poisson GLM, and achieving accurate posterior summaries demands careful convergence diagnostics."
+solution_explanation = "The reference solution uses a Metropolis-within-Gibbs algorithm. The latent random effects u_i are integrated out analytically or sampled via data augmentation. The solution implements block updates for regression coefficients, a random-walk Metropolis update for sigma on the log scale, and a Metropolis-Hastings update for the zero-inflation probability p. The chain is run for 30,000 iterations with 10,000 burn-in, and posterior summaries are computed from the remaining samples."
+verification_explanation = "The verifier compares the agent's posterior summary JSON against a precomputed ground truth obtained from a long MCMC run (100,000 iterations) using the same data and priors. Tolerance thresholds are set based on the variability observed across multiple long runs: means within 0.05, standard deviations within 0.05, and quantiles within 0.15 for each parameter. The verifier also checks that the output file exists, is valid JSON, and contains all required keys."
+category = "ML"
+subcategory = "Training"
+tags = ["bayesian", "mcmc", "statistics", "random-effects"]
+expert_time_estimate_hours = 4
+relevant_experience = "I have a strong background in Bayesian statistics and machine learning, with hands-on experience implementing MCMC algorithms for hierarchical models. I understand the challenges of tuning samplers and validating convergence, which is essential for this task."
+
+[verifier]
+timeout_sec = 120.0
+environment_mode = "separate"
+
+[agent]
+timeout_sec = 7200.0
+
+build_timeout_sec = 600.0
+cpus = 4
+memory_mb = 4096
+storage_mb = 10240
+gpus = 0
+
+[instruction]
+# Zero-Inflated Poisson Regression with Random Intercept
+
+You are given a dataset at `/app/data.csv` containing three columns: `group` (integer group identifier), `x` (a continuous covariate in [0,1]), and `y` (a non-negative integer count). The data were generated from a zero-inflated Poisson (ZIP) regression model with a random intercept per group.
+
+## Data Generation
+
+The dataset is fixed and was generated with the following exact procedure (seed 42):
+
+- Number of groups: \(G = 20\)
+- Observations per group: \(n = 10\)
+- Covariate \(x\): independently drawn from Uniform(0,1)
+- Random intercepts \(u_i\): drawn from \(\mathcal{N}(0, 0.5^2)\)
+- True parameters: \(\beta_0 = 0.5\), \(\beta_1 = 1.0\), \(\sigma = 0.5\), \(p = 0.3\)
+- The response \(y_{ij}\) is drawn from ZIP with \(\lambda_{ij} = \exp(\beta_0 + \beta_1 x_{ij} + u_i)\) and zero‑inflation probability \(p\).
+
+This information is provided for transparency; you do not need to re‑generate the data.
+
+## Model and Priors
+
+The model is specified as follows:
+
+For group \( i = 1, \ldots, G \) and observation \( j = 1, \ldots, n_i \):
+\[
+\begin{aligned}
+y_{ij} &\sim \text{ZIP}(\lambda_{ij}, p), \\
+\lambda_{ij} &= \exp(\beta_0 + \beta_1 x_{ij} + u_i), \\
+u_i &\sim \mathcal{N}(0, \sigma^2).
+\end{aligned}
+\]
+
+The zero-inflation probability \( p \) is the same across all observations. The parameters to estimate are:
+- \( \beta_0 \) (intercept)
+- \( \beta_1 \) (slope)
+- \( \sigma \) (standard deviation of random intercepts)
+- \( p \) (zero-inflation probability)
+
+Priors (all independent):
+- \( \beta_0 \sim \mathcal{N}(0, 10^2) \)
+- \( \beta_1 \sim \mathcal{N}(0, 10^2) \)
+- \( \sigma \sim \text{Half-Cauchy}(0, 5) \)
+- \( p \sim \text{Beta}(1, 1) \) (i.e., Uniform(0,1))
+
+Your task is to implement a Markov chain Monte Carlo (MCMC) sampler to draw samples from the posterior distribution of these four parameters. You may use any MCMC algorithm (e.g., Metropolis-Hastings, Gibbs sampling, Hamiltonian Monte Carlo), but you **must implement it yourself**—do not use existing probabilistic programming libraries like PyMC, Stan, or Edward.
+
+After obtaining a sufficient number of posterior samples (we recommend at least 20,000 iterations after burn-in, with appropriate thinning if necessary), compute the following posterior summaries for each parameter:
+- posterior mean
+- posterior standard deviation
+- 2.5% and 97.5% quantiles (i.e., 95% credible interval)
+
+Write these summaries to `/app/posterior_summary.json` in the following format:
+
+```json
+{
+  "beta0": {"mean": ..., "sd": ..., "q025": ..., "q975": ...},
+  "beta1": {"mean": ..., "sd": ..., "q025": ..., "q975": ...},
+  "sigma": {"mean": ..., "sd": ..., "q025": ..., "q975": ...},
+  "p":    {"mean": ..., "sd": ..., "q025": ..., "q975": ...}
+}
+
+FROM python:3.11-slim-bookworm
+
+# Install required Python packages
+RUN pip install numpy==1.26.4 pandas==2.2.2 scipy==1.13.0
+
+# Set working directory
+WORKDIR /app
+
+# Copy data generation script and run it to produce /app/data.csv
+COPY generate_data.py /tmp/generate_data.py
+RUN python /tmp/generate_data.py && rm /tmp/generate_data.py
+
+# The agent will have the data at /app/data.csv
+import numpy as np
+import pandas as pd
+
+# Set seed for reproducibility
+np.random.seed(42)
+
+# Parameters
+G = 20           # number of groups
+n_per_group = 10 # observations per group
+N = G * n_per_group
+
+# True parameter values
+beta0_true = 0.5
+beta1_true = 1.0
+sigma_true = 0.5
+p_true = 0.3
+
+# Generate groups and covariates
+groups = np.repeat(np.arange(1, G+1), n_per_group)
+x = np.random.uniform(0, 1, size=N)
+
+# Random intercepts
+u = np.random.normal(0, sigma_true, size=G)
+u_expanded = u[groups - 1]  # index by group id
+
+# Linear predictor and Poisson mean
+eta = beta0_true + beta1_true * x + u_expanded
+lambda_ = np.exp(eta)
+
+# Zero-inflation process
+z = np.random.binomial(1, p_true, size=N)  # 1 = structural zero
+y = np.where(z == 1, 0, np.random.poisson(lambda_))
+
+# Save to CSV
+df = pd.DataFrame({'group': groups, 'x': x, 'y': y})
+df.to_csv('/app/data.csv', index=False)
+print("Data saved to /app/data.csv")
+#!/bin/bash
+set -e
+python /solution/solution.py
+import numpy as np
+import pandas as pd
+import json
+from scipy import stats
+from scipy.special import gammaln
+
+# Set seed for reproducibility of the reference solution
+np.random.seed(123)
+
+# Load data
+data = pd.read_csv('/app/data.csv')
+groups = data['group'].values
+x = data['x'].values
+y = data['y'].values
+G = len(np.unique(groups))
+N = len(y)
+
+# Prior hyperparameters
+beta_prior_mean = 0.0
+beta_prior_sd = 10.0
+sigma_scale = 5.0  # half-Cauchy scale
+
+# MCMC settings
+n_iter = 30000
+burn_in = 10000
+thin = 2
+
+# Initial values
+beta0 = 0.0
+beta1 = 0.0
+sigma = 1.0
+p = 0.5
+u = np.zeros(G)  # random intercepts
+
+# Precompute group indices
+group_indices = [np.where(groups == g)[0] for g in range(1, G+1)]
+
+# Storage for samples
+samples = {
+    'beta0': [],
+    'beta1': [],
+    'sigma': [],
+    'p': []
+}
+
+def log_likelihood(beta0, beta1, sigma, p, u):
+    eta = beta0 + beta1 * x + u[groups - 1]
+    lam = np.exp(eta)
+    ll = np.zeros(N)
+    mask0 = (y == 0)
+    ll[mask0] = np.log(p + (1-p) * np.exp(-lam[mask0]))
+    mask_pos = ~mask0
+    ll[mask_pos] = np.log(1-p) + y[mask_pos]*np.log(lam[mask_pos]) - lam[mask_pos] - gammaln(y[mask_pos]+1)
+    return np.sum(ll)
+
+def log_prior(beta0, beta1, sigma, p):
+    lp = stats.norm.logpdf(beta0, beta_prior_mean, beta_prior_sd)
+    lp += stats.norm.logpdf(beta1, beta_prior_mean, beta_prior_sd)
+    lp += stats.halfcauchy.logpdf(sigma, scale=sigma_scale)
+    lp += stats.beta.logpdf(p, 1, 1)
+    return lp
+
+def log_post(beta0, beta1, sigma, p, u):
+    return log_likelihood(beta0, beta1, sigma, p, u) + log_prior(beta0, beta1, sigma, p) + np.sum(stats.norm.logpdf(u, 0, sigma))
+
+# Metropolis-within-Gibbs
+for it in range(n_iter):
+    # Update beta0 and beta1 jointly
+    prop_beta0 = beta0 + np.random.normal(0, 0.1)
+    prop_beta1 = beta1 + np.random.normal(0, 0.1)
+    log_ratio = log_post(prop_beta0, prop_beta1, sigma, p, u) - log_post(beta0, beta1, sigma, p, u)
+    if np.log(np.random.rand()) < log_ratio:
+        beta0, beta1 = prop_beta0, prop_beta1
+
+    # Update sigma on log scale
+    prop_log_sigma = np.log(sigma) + np.random.normal(0, 0.2)
+    prop_sigma = np.exp(prop_log_sigma)
+    log_ratio = log_post(beta0, beta1, prop_sigma, p, u) - log_post(beta0, beta1, sigma, p, u) + prop_log_sigma - np.log(sigma)
+    if np.log(np.random.rand()) < log_ratio:
+        sigma = prop_sigma
+
+    # Update p
+    prop_p = p + np.random.normal(0, 0.05)
+    if prop_p <= 0 or prop_p >= 1:
+        prop_p = p
+    log_ratio = log_post(beta0, beta1, sigma, prop_p, u) - log_post(beta0, beta1, sigma, p, u)
+    if np.log(np.random.rand()) < log_ratio:
+        p = prop_p
+
+    # Update random intercepts
+    for g in range(G):
+        prop_u = u.copy()
+        prop_u[g] += np.random.normal(0, 0.1)
+        log_ratio = log_post(beta0, beta1, sigma, p, prop_u) - log_post(beta0, beta1, sigma, p, u)
+        if np.log(np.random.rand()) < log_ratio:
+            u = prop_u
+
+    if it >= burn_in and (it - burn_in) % thin == 0:
+        samples['beta0'].append(beta0)
+        samples['beta1'].append(beta1)
+        samples['sigma'].append(sigma)
+        samples['p'].append(p)
+
+# Compute summaries
+posterior_summary = {}
+for name, arr in samples.items():
+    arr = np.array(arr)
+    posterior_summary[name] = {
+        'mean': float(np.mean(arr)),
+        'sd': float(np.std(arr)),
+        'q025': float(np.quantile(arr, 0.025)),
+        'q975': float(np.quantile(arr, 0.975))
+    }
+
+with open('/app/posterior_summary.json', 'w') as f:
+    json.dump(posterior_summary, f, indent=2)
+print("Posterior summary saved to /app/posterior_summary.json")
+FROM python:3.11-slim-bookworm
+
+# Install required packages for verifier (including pytest plugins)
+RUN pip install numpy==1.26.4 pandas==2.2.2 scipy==1.13.0 pytest==9.1.1 pytest-json-ctrf==0.5.2
+
+# Create /app directory for artifact
+RUN mkdir -p /app
+
+# Copy test files into image
+COPY . /tests/
+#!/bin/bash
+set -e
+
+# Run pytest with CTRF report
+pytest /tests/test_verifier.py --ctrf-report /logs/verifier/ctrf-report.json
+
+# Write reward based on exit code
+if [ $? -eq 0 ]; then
+  echo 1 > /logs/verifier/reward.txt
+else
+  echo 0 > /logs/verifier/reward.txt
+fi
+import json
+import os
+
+def test_posterior_summary():
+    artifact_path = '/app/posterior_summary.json'
+    assert os.path.exists(artifact_path), f"Missing {artifact_path}"
+
+    with open(artifact_path) as f:
+        agent_summary = json.load(f)
+
+    with open('/tests/ground_truth.json') as f:
+        truth = json.load(f)
+
+    mean_tol = 0.05
+    sd_tol = 0.05
+    q_tol = 0.15
+
+    params = ['beta0', 'beta1', 'sigma', 'p']
+    for param in params:
+        assert param in agent_summary, f"Missing parameter {param}"
+        a = agent_summary[param]
+        t = truth[param]
+        assert abs(a['mean'] - t['mean']) <= mean_tol, f"{param} mean mismatch"
+        assert abs(a['sd'] - t['sd']) <= sd_tol, f"{param} sd mismatch"
+        assert abs(a['q025'] - t['q025']) <= q_tol, f"{param} q025 mismatch"
+        assert abs(a['q975'] - t['q975']) <= q_tol, f"{param} q975 mismatch"
+import numpy as np
+import pandas as pd
+import json
+from scipy import stats
+from scipy.special import gammaln
+
+# Set seed for deterministic ground truth generation
+np.random.seed(42)
+
+# Load data (you must have /app/data.csv)
+data = pd.read_csv('/app/data.csv')
+groups = data['group'].values
+x = data['x'].values
+y = data['y'].values
+G = len(np.unique(groups))
+N = len(y)
+
+# Priors
+beta_prior_mean = 0.0
+beta_prior_sd = 10.0
+sigma_scale = 5.0
+
+# MCMC settings (longer chain)
+n_iter = 100000
+burn_in = 20000
+thin = 5
+
+# Initial values
+beta0 = 0.0
+beta1 = 0.0
+sigma = 1.0
+p = 0.5
+u = np.zeros(G)
+
+group_indices = [np.where(groups == g)[0] for g in range(1, G+1)]
+
+def log_likelihood(beta0, beta1, sigma, p, u):
+    eta = beta0 + beta1 * x + u[groups - 1]
+    lam = np.exp(eta)
+    ll = np.zeros(N)
+    mask0 = (y == 0)
+    ll[mask0] = np.log(p + (1-p) * np.exp(-lam[mask0]))
+    mask_pos = ~mask0
+    ll[mask_pos] = np.log(1-p) + y[mask_pos]*np.log(lam[mask_pos]) - lam[mask_pos] - gammaln(y[mask_pos]+1)
+    return np.sum(ll)
+
+def log_prior(beta0, beta1, sigma, p):
+    lp = stats.norm.logpdf(beta0, beta_prior_mean, beta_prior_sd)
+    lp += stats.norm.logpdf(beta1, beta_prior_mean, beta_prior_sd)
+    lp += stats.halfcauchy.logpdf(sigma, scale=sigma_scale)
+    lp += stats.beta.logpdf(p, 1, 1)
+    return lp
+
+def log_post(beta0, beta1, sigma, p, u):
+    return log_likelihood(beta0, beta1, sigma, p, u) + log_prior(beta0, beta1, sigma, p) + np.sum(stats.norm.logpdf(u, 0, sigma))
+
+samples = {'beta0': [], 'beta1': [], 'sigma': [], 'p': []}
+for it in range(n_iter):
+    prop_beta0 = beta0 + np.random.normal(0, 0.1)
+    prop_beta1 = beta1 + np.random.normal(0, 0.1)
+    log_ratio = log_post(prop_beta0, prop_beta1, sigma, p, u) - log_post(beta0, beta1, sigma, p, u)
+    if np.log(np.random.rand()) < log_ratio:
+        beta0, beta1 = prop_beta0, prop_beta1
+
+    prop_log_sigma = np.log(sigma) + np.random.normal(0, 0.2)
+    prop_sigma = np.exp(prop_log_sigma)
+    log_ratio = log_post(beta0, beta1, prop_sigma, p, u) - log_post(beta0, beta1, sigma, p, u) + prop_log_sigma - np.log(sigma)
+    if np.log(np.random.rand()) < log_ratio:
+        sigma = prop_sigma
+
+    prop_p = p + np.random.normal(0, 0.05)
+    if prop_p <= 0 or prop_p >= 1:
+        prop_p = p
+    log_ratio = log_post(beta0, beta1, sigma, prop_p, u) - log_post(beta0, beta1, sigma, p, u)
+    if np.log(np.random.rand()) < log_ratio:
+        p = prop_p
+
+    for g in range(G):
+        prop_u = u.copy()
+        prop_u[g] += np.random.normal(0, 0.1)
+        log_ratio = log_post(beta0, beta1, sigma, p, prop_u) - log_post(beta0, beta1, sigma, p, u)
+        if np.log(np.random.rand()) < log_ratio:
+            u = prop_u
+
+    if it >= burn_in and (it - burn_in) % thin == 0:
+        samples['beta0'].append(beta0)
+        samples['beta1'].append(beta1)
+        samples['sigma'].append(sigma)
+        samples['p'].append(p)
+
+truth = {}
+for name, arr in samples.items():
+    arr = np.array(arr)
+    truth[name] = {
+        'mean': float(np.mean(arr)),
+        'sd': float(np.std(arr)),
+        'q025': float(np.quantile(arr, 0.025)),
+        'q975': float(np.quantile(arr, 0.975))
+    }
+
+with open('/tests/ground_truth.json', 'w') as f:
+    json.dump(truth, f, indent=2)
+print("Ground truth saved to /tests/ground_truth.json")
