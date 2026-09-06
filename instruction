@@ -1,0 +1,58 @@
+# Zero-Inflated Poisson Regression with Random Intercept
+
+You are given a dataset at `/app/data.csv` containing three columns: `group` (integer group identifier), `x` (a continuous covariate in [0,1]), and `y` (a non-negative integer count). The data were generated from a zero-inflated Poisson (ZIP) regression model with a random intercept per group.
+
+## Data Generation
+
+The dataset is fixed and was generated with the following exact procedure (seed 42):
+
+- Number of groups: \(G = 20\)
+- Observations per group: \(n = 10\)
+- Covariate \(x\): independently drawn from Uniform(0,1)
+- Random intercepts \(u_i\): drawn from \(\mathcal{N}(0, 0.5^2)\)
+- True parameters: \(\beta_0 = 0.5\), \(\beta_1 = 1.0\), \(\sigma = 0.5\), \(p = 0.3\)
+- The response \(y_{ij}\) is drawn from ZIP with \(\lambda_{ij} = \exp(\beta_0 + \beta_1 x_{ij} + u_i)\) and zero‑inflation probability \(p\).
+
+This information is provided for transparency; you do not need to re‑generate the data.
+
+## Model and Priors
+
+The model is specified as follows:
+
+For group \( i = 1, \ldots, G \) and observation \( j = 1, \ldots, n_i \):
+\[
+\begin{aligned}
+y_{ij} &\sim \text{ZIP}(\lambda_{ij}, p), \\
+\lambda_{ij} &= \exp(\beta_0 + \beta_1 x_{ij} + u_i), \\
+u_i &\sim \mathcal{N}(0, \sigma^2).
+\end{aligned}
+\]
+
+The zero-inflation probability \( p \) is the same across all observations. The parameters to estimate are:
+- \( \beta_0 \) (intercept)
+- \( \beta_1 \) (slope)
+- \( \sigma \) (standard deviation of random intercepts)
+- \( p \) (zero-inflation probability)
+
+Priors (all independent):
+- \( \beta_0 \sim \mathcal{N}(0, 10^2) \)
+- \( \beta_1 \sim \mathcal{N}(0, 10^2) \)
+- \( \sigma \sim \text{Half-Cauchy}(0, 5) \)
+- \( p \sim \text{Beta}(1, 1) \) (i.e., Uniform(0,1))
+
+Your task is to implement a Markov chain Monte Carlo (MCMC) sampler to draw samples from the posterior distribution of these four parameters. You may use any MCMC algorithm (e.g., Metropolis-Hastings, Gibbs sampling, Hamiltonian Monte Carlo), but you **must implement it yourself**—do not use existing probabilistic programming libraries like PyMC, Stan, or Edward.
+
+After obtaining a sufficient number of posterior samples (we recommend at least 20,000 iterations after burn-in, with appropriate thinning if necessary), compute the following posterior summaries for each parameter:
+- posterior mean
+- posterior standard deviation
+- 2.5% and 97.5% quantiles (i.e., 95% credible interval)
+
+Write these summaries to `/app/posterior_summary.json` in the following format:
+
+```json
+{
+  "beta0": {"mean": ..., "sd": ..., "q025": ..., "q975": ...},
+  "beta1": {"mean": ..., "sd": ..., "q025": ..., "q975": ...},
+  "sigma": {"mean": ..., "sd": ..., "q025": ..., "q975": ...},
+  "p":    {"mean": ..., "sd": ..., "q025": ..., "q975": ...}
+}
