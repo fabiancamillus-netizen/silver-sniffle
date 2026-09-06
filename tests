@@ -1,6 +1,8 @@
+7. tests/Dockerfile
 #!/bin/bash
 set -e
 
+8. tests/test.sh
 # Run pytest with CTRF report
 pytest /tests/test_verifier.py --ctrf-report /logs/verifier/ctrf-report.json
 
@@ -10,6 +12,8 @@ if [ $? -eq 0 ]; then
 else
   echo 0 > /logs/verifier/reward.txt
 fi
+
+9. tests/test_verifier.py
 import json
 import os
 
@@ -36,6 +40,8 @@ def test_posterior_summary():
         assert abs(a['sd'] - t['sd']) <= sd_tol, f"{param} sd mismatch"
         assert abs(a['q025'] - t['q025']) <= q_tol, f"{param} q025 mismatch"
         assert abs(a['q975'] - t['q975']) <= q_tol, f"{param} q975 mismatch"
+
+10. tests/generate_ground_truth.py
 import numpy as np
 import pandas as pd
 import json
