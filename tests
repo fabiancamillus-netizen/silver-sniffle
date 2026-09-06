@@ -1,0 +1,141 @@
+#!/bin/bash
+set -e
+
+# Run pytest with CTRF report
+pytest /tests/test_verifier.py --ctrf-report /logs/verifier/ctrf-report.json
+
+# Write reward based on exit code
+if [ $? -eq 0 ]; then
+  echo 1 > /logs/verifier/reward.txt
+else
+  echo 0 > /logs/verifier/reward.txt
+fi
+import json
+import os
+
+def test_posterior_summary():
+    artifact_path = '/app/posterior_summary.json'
+    assert os.path.exists(artifact_path), f"Missing {artifact_path}"
+
+    with open(artifact_path) as f:
+        agent_summary = json.load(f)
+
+    with open('/tests/ground_truth.json') as f:
+        truth = json.load(f)
+
+    mean_tol = 0.05
+    sd_tol = 0.05
+    q_tol = 0.15
+
+    params = ['beta0', 'beta1', 'sigma', 'p']
+    for param in params:
+        assert param in agent_summary, f"Missing parameter {param}"
+        a = agent_summary[param]
+        t = truth[param]
+        assert abs(a['mean'] - t['mean']) <= mean_tol, f"{param} mean mismatch"
+        assert abs(a['sd'] - t['sd']) <= sd_tol, f"{param} sd mismatch"
+        assert abs(a['q025'] - t['q025']) <= q_tol, f"{param} q025 mismatch"
+        assert abs(a['q975'] - t['q975']) <= q_tol, f"{param} q975 mismatch"
+import numpy as np
+import pandas as pd
+import json
+from scipy import stats
+from scipy.special import gammaln
+
+# Set seed for deterministic ground truth generation
+np.random.seed(42)
+
+# Load data (you must have /app/data.csv)
+data = pd.read_csv('/app/data.csv')
+groups = data['group'].values
+x = data['x'].values
+y = data['y'].values
+G = len(np.unique(groups))
+N = len(y)
+
+# Priors
+beta_prior_mean = 0.0
+beta_prior_sd = 10.0
+sigma_scale = 5.0
+
+# MCMC settings (longer chain)
+n_iter = 100000
+burn_in = 20000
+thin = 5
+
+# Initial values
+beta0 = 0.0
+beta1 = 0.0
+sigma = 1.0
+p = 0.5
+u = np.zeros(G)
+
+group_indices = [np.where(groups == g)[0] for g in range(1, G+1)]
+
+def log_likelihood(beta0, beta1, sigma, p, u):
+    eta = beta0 + beta1 * x + u[groups - 1]
+    lam = np.exp(eta)
+    ll = np.zeros(N)
+    mask0 = (y == 0)
+    ll[mask0] = np.log(p + (1-p) * np.exp(-lam[mask0]))
+    mask_pos = ~mask0
+    ll[mask_pos] = np.log(1-p) + y[mask_pos]*np.log(lam[mask_pos]) - lam[mask_pos] - gammaln(y[mask_pos]+1)
+    return np.sum(ll)
+
+def log_prior(beta0, beta1, sigma, p):
+    lp = stats.norm.logpdf(beta0, beta_prior_mean, beta_prior_sd)
+    lp += stats.norm.logpdf(beta1, beta_prior_mean, beta_prior_sd)
+    lp += stats.halfcauchy.logpdf(sigma, scale=sigma_scale)
+    lp += stats.beta.logpdf(p, 1, 1)
+    return lp
+
+def log_post(beta0, beta1, sigma, p, u):
+    return log_likelihood(beta0, beta1, sigma, p, u) + log_prior(beta0, beta1, sigma, p) + np.sum(stats.norm.logpdf(u, 0, sigma))
+
+samples = {'beta0': [], 'beta1': [], 'sigma': [], 'p': []}
+for it in range(n_iter):
+    prop_beta0 = beta0 + np.random.normal(0, 0.1)
+    prop_beta1 = beta1 + np.random.normal(0, 0.1)
+    log_ratio = log_post(prop_beta0, prop_beta1, sigma, p, u) - log_post(beta0, beta1, sigma, p, u)
+    if np.log(np.random.rand()) < log_ratio:
+        beta0, beta1 = prop_beta0, prop_beta1
+
+    prop_log_sigma = np.log(sigma) + np.random.normal(0, 0.2)
+    prop_sigma = np.exp(prop_log_sigma)
+    log_ratio = log_post(beta0, beta1, prop_sigma, p, u) - log_post(beta0, beta1, sigma, p, u) + prop_log_sigma - np.log(sigma)
+    if np.log(np.random.rand()) < log_ratio:
+        sigma = prop_sigma
+
+    prop_p = p + np.random.normal(0, 0.05)
+    if prop_p <= 0 or prop_p >= 1:
+        prop_p = p
+    log_ratio = log_post(beta0, beta1, sigma, prop_p, u) - log_post(beta0, beta1, sigma, p, u)
+    if np.log(np.random.rand()) < log_ratio:
+        p = prop_p
+
+    for g in range(G):
+        prop_u = u.copy()
+        prop_u[g] += np.random.normal(0, 0.1)
+        log_ratio = log_post(beta0, beta1, sigma, p, prop_u) - log_post(beta0, beta1, sigma, p, u)
+        if np.log(np.random.rand()) < log_ratio:
+            u = prop_u
+
+    if it >= burn_in and (it - burn_in) % thin == 0:
+        samples['beta0'].append(beta0)
+        samples['beta1'].append(beta1)
+        samples['sigma'].append(sigma)
+        samples['p'].append(p)
+
+truth = {}
+for name, arr in samples.items():
+    arr = np.array(arr)
+    truth[name] = {
+        'mean': float(np.mean(arr)),
+        'sd': float(np.std(arr)),
+        'q025': float(np.quantile(arr, 0.025)),
+        'q975': float(np.quantile(arr, 0.975))
+    }
+
+with open('/tests/ground_truth.json', 'w') as f:
+    json.dump(truth, f, indent=2)
+print("Ground truth saved to /tests/ground_truth.json")
