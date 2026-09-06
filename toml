@@ -1,0 +1,31 @@
+```toml
+artifacts = ["/app/posterior_summary.json"]
+
+[task]
+name = "afterquery/zi-mcmc"
+
+[metadata]
+author_name = "Bernard Omolo"
+author_email = "bomolo64@gmail.com"
+difficulty_explanation = "This task requires implementing a custom MCMC sampler for a non-standard model with a latent random intercept and zero-inflation. Frontier agents often fail because they either rely on existing libraries (which are not allowed) or make subtle errors in deriving conditional posteriors and tuning proposal distributions. The model's hierarchical structure and the zero-inflation component make it more complex than a standard Poisson GLM, and achieving accurate posterior summaries demands careful convergence diagnostics."
+solution_explanation = "The reference solution uses a Metropolis-within-Gibbs algorithm. The latent random effects u_i are integrated out analytically or sampled via data augmentation. The solution implements block updates for regression coefficients, a random-walk Metropolis update for sigma on the log scale, and a Metropolis-Hastings update for the zero-inflation probability p. The chain is run for 30,000 iterations with 10,000 burn-in, and posterior summaries are computed from the remaining samples."
+verification_explanation = "The verifier compares the agent's posterior summary JSON against a precomputed ground truth obtained from a long MCMC run (100,000 iterations) using the same data and priors. Tolerance thresholds are set based on the variability observed across multiple long runs: means within 0.05, standard deviations within 0.05, and quantiles within 0.15 for each parameter. The verifier also checks that the output file exists, is valid JSON, and contains all required keys."
+category = "ML"
+subcategory = "Training"
+tags = ["bayesian", "mcmc", "statistics", "random-effects"]
+expert_time_estimate_hours = 4
+relevant_experience = "I have a strong background in Bayesian statistics and machine learning, with hands-on experience implementing MCMC algorithms for hierarchical models. I understand the challenges of tuning samplers and validating convergence, which is essential for this task."
+
+[verifier]
+timeout_sec = 120.0
+environment_mode = "separate"
+
+[agent]
+timeout_sec = 7200.0
+
+[environment]
+build_timeout_sec = 600.0
+cpus = 4
+memory_mb = 4096
+storage_mb = 10240
+gpus = 0
