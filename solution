@@ -1,6 +1,9 @@
+5. solution/solve.sh
 #!/bin/bash
 set -e
 python /solution/solution.py
+
+6. solution/solution.py
 import numpy as np
 import pandas as pd
 import json
