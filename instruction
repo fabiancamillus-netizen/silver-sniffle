@@ -1,3 +1,4 @@
+1. instruction.md
 # Zero-Inflated Poisson Regression with Random Intercept
 
 You are given a dataset at `/app/data.csv` containing three columns: `group` (integer group identifier), `x` (a continuous covariate in [0,1]), and `y` (a non-negative integer count). The data were generated from a zero-inflated Poisson (ZIP) regression model with a random intercept per group.
