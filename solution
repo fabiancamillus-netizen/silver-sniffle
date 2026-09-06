@@ -1,0 +1,120 @@
+#!/bin/bash
+set -e
+python /solution/solution.py
+import numpy as np
+import pandas as pd
+import json
+from scipy import stats
+from scipy.special import gammaln
+
+# Set seed for reproducibility of the reference solution
+np.random.seed(123)
+
+# Load data
+data = pd.read_csv('/app/data.csv')
+groups = data['group'].values
+x = data['x'].values
+y = data['y'].values
+G = len(np.unique(groups))
+N = len(y)
+
+# Prior hyperparameters
+beta_prior_mean = 0.0
+beta_prior_sd = 10.0
+sigma_scale = 5.0  # half-Cauchy scale
+
+# MCMC settings
+n_iter = 30000
+burn_in = 10000
+thin = 2
+
+# Initial values
+beta0 = 0.0
+beta1 = 0.0
+sigma = 1.0
+p = 0.5
+u = np.zeros(G)  # random intercepts
+
+# Precompute group indices
+group_indices = [np.where(groups == g)[0] for g in range(1, G+1)]
+
+# Storage for samples
+samples = {
+    'beta0': [],
+    'beta1': [],
+    'sigma': [],
+    'p': []
+}
+
+def log_likelihood(beta0, beta1, sigma, p, u):
+    eta = beta0 + beta1 * x + u[groups - 1]
+    lam = np.exp(eta)
+    ll = np.zeros(N)
+    mask0 = (y == 0)
+    ll[mask0] = np.log(p + (1-p) * np.exp(-lam[mask0]))
+    mask_pos = ~mask0
+    ll[mask_pos] = np.log(1-p) + y[mask_pos]*np.log(lam[mask_pos]) - lam[mask_pos] - gammaln(y[mask_pos]+1)
+    return np.sum(ll)
+
+def log_prior(beta0, beta1, sigma, p):
+    lp = stats.norm.logpdf(beta0, beta_prior_mean, beta_prior_sd)
+    lp += stats.norm.logpdf(beta1, beta_prior_mean, beta_prior_sd)
+    lp += stats.halfcauchy.logpdf(sigma, scale=sigma_scale)
+    lp += stats.beta.logpdf(p, 1, 1)
+    return lp
+
+def log_post(beta0, beta1, sigma, p, u):
+    return log_likelihood(beta0, beta1, sigma, p, u) + log_prior(beta0, beta1, sigma, p) + np.sum(stats.norm.logpdf(u, 0, sigma))
+
+# Metropolis-within-Gibbs
+for it in range(n_iter):
+    # Update beta0 and beta1 jointly
+    prop_beta0 = beta0 + np.random.normal(0, 0.1)
+    prop_beta1 = beta1 + np.random.normal(0, 0.1)
+    log_ratio = log_post(prop_beta0, prop_beta1, sigma, p, u) - log_post(beta0, beta1, sigma, p, u)
+    if np.log(np.random.rand()) < log_ratio:
+        beta0, beta1 = prop_beta0, prop_beta1
+
+    # Update sigma on log scale
+    prop_log_sigma = np.log(sigma) + np.random.normal(0, 0.2)
+    prop_sigma = np.exp(prop_log_sigma)
+    log_ratio = log_post(beta0, beta1, prop_sigma, p, u) - log_post(beta0, beta1, sigma, p, u) + prop_log_sigma - np.log(sigma)
+    if np.log(np.random.rand()) < log_ratio:
+        sigma = prop_sigma
+
+    # Update p
+    prop_p = p + np.random.normal(0, 0.05)
+    if prop_p <= 0 or prop_p >= 1:
+        prop_p = p
+    log_ratio = log_post(beta0, beta1, sigma, prop_p, u) - log_post(beta0, beta1, sigma, p, u)
+    if np.log(np.random.rand()) < log_ratio:
+        p = prop_p
+
+    # Update random intercepts
+    for g in range(G):
+        prop_u = u.copy()
+        prop_u[g] += np.random.normal(0, 0.1)
+        log_ratio = log_post(beta0, beta1, sigma, p, prop_u) - log_post(beta0, beta1, sigma, p, u)
+        if np.log(np.random.rand()) < log_ratio:
+            u = prop_u
+
+    if it >= burn_in and (it - burn_in) % thin == 0:
+        samples['beta0'].append(beta0)
+        samples['beta1'].append(beta1)
+        samples['sigma'].append(sigma)
+        samples['p'].append(p)
+
+# Compute summaries
+posterior_summary = {}
+for name, arr in samples.items():
+    arr = np.array(arr)
+    posterior_summary[name] = {
+        'mean': float(np.mean(arr)),
+        'sd': float(np.std(arr)),
+        'q025': float(np.quantile(arr, 0.025)),
+        'q975': float(np.quantile(arr, 0.975))
+    }
+
+with open('/app/posterior_summary.json', 'w') as f:
+    json.dump(posterior_summary, f, indent=2)
+print("Posterior summary saved to /app/posterior_summary.json")
