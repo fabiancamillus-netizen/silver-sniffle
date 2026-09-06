@@ -2,7 +2,7 @@
 artifacts = ["/app/posterior_summary.json"]
 
 [task]
-name = "afterquery/zi-mcmc"
+name = "afterquery-zi-mcmc"
 
 [metadata]
 author_name = "Bernard Omolo"
